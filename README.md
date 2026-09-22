@@ -25,7 +25,7 @@ TuckBar is built for low, stable resource use. It is a single AppKit source file
 
 Measured on macOS 26, Apple Silicon:
 
-| Metric | TuckBar 1.0.0 |
+| Metric | TuckBar 1.1.0 |
 | --- | --- |
 | Memory footprint | 25 MB, stable over time |
 | Idle CPU | 0% |
@@ -35,6 +35,8 @@ Measured on macOS 26, Apple Silicon:
 ## Features
 
 - Show or hide menu bar icons with one click
+- Customizable global hotkey (default ⌃⌥⌘T), plus Shift to show everything
+- Optional always-hidden section for icons you almost never need
 - Optional auto-hide 10 seconds after you expand
 - Launch at login
 - Positions persist across restarts
@@ -67,20 +69,33 @@ xattr -dr com.apple.quarantine /Applications/TuckBar.app
 
 1. Launch TuckBar. A chevron and a `|` separator appear in the menu bar.
 2. Hold Cmd and drag the icons you want to hide to the left of the separator.
-3. Click the chevron to show or hide those icons.
-4. Right-click or Option-click the chevron to open the menu.
+3. Click the chevron, or press ⌃⌥⌘T, to show or hide those icons.
+4. Right-click or Control-click the chevron to open the menu.
+
+| Action | Result |
+| --- | --- |
+| Click the chevron, or ⌃⌥⌘T | Show or hide the hidden section |
+| Option-click the chevron, or ⌃⌥⌘⇧T | Show everything, including the always-hidden section |
+| Right-click or Control-click the chevron | Open the menu |
 
 | Menu item | Description |
 | --- | --- |
 | Auto-hide after 10s | Hides the icons again 10 seconds after you expand them |
+| Always-hidden section | Adds a second `‖` separator. Icons to its left stay hidden until you show everything |
+| Hotkey Enabled | Turns the global hotkeys on or off |
+| Set Hotkey… | Records a new shortcut. Show All uses the same shortcut plus Shift |
 | Launch at Login | Starts TuckBar when you log in |
 | Quit TuckBar | Quits the app |
 
-The chevron must stay to the right of the separator. If the order is reversed, TuckBar does not collapse, so it cannot hide its own control.
+### Always-hidden section
+
+Turn on Always-hidden section in the menu. A `‖` separator appears to the left of the `|` separator. Hold Cmd and drag the icons you rarely need to the left of `‖`. A normal click does not show these icons. Option-click the chevron or press ⌃⌥⌘⇧T to show them. When you show everything, TuckBar hides it again after 10 seconds.
+
+The order from left to right must be `‖`, then `|`, then the chevron. If a separator is out of order, TuckBar does not collapse it, so it cannot hide its own controls.
 
 ## How it works
 
-TuckBar adds two status items: a chevron and a separator. To hide icons, it expands the separator to 10,000 points wide. This pushes every item to its left off screen. To show them, it returns the separator to its normal width. macOS stores each item's position, so the layout persists across restarts.
+TuckBar adds a chevron and one or two separators to the menu bar. To hide icons, it expands a separator to 10,000 points wide. This pushes every item to its left off screen. To show them, it returns the separator to its normal width. The hotkeys use the Carbon hotkey API, so TuckBar needs no Accessibility permission. macOS stores each item's position, so the layout persists across restarts.
 
 ## Building from source
 
