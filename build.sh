@@ -17,7 +17,9 @@ for arch in arm64 x86_64; do
 done
 lipo -create build/TuckBar-arm64 build/TuckBar-x86_64 -output "$BIN"
 rm build/TuckBar-arm64 build/TuckBar-x86_64
-codesign --force --sign - "$APP"
+# A stable identity keeps the Accessibility grant across rebuilds; ad-hoc signing resets it every build.
+SIGN_ID=$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/ {print $2; exit}')
+codesign --force --sign "${SIGN_ID:--}" "$APP"
 
 case "$1" in
   install)
