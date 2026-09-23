@@ -25,10 +25,21 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     private var hoverMonitors: [Any] = []
     private var pointerMonitors: [Any] = []
     private var hideCheck: DispatchWorkItem?
+    private var stripHide: DispatchWorkItem?
+    private var peeking = false
+    private var stripCache: [String: [FolderStrip.Item]] = [:]
+    private let cover = Cover()
+    private let strip = FolderStrip()
     private lazy var folders = Folders { [weak self] done in
-        guard let self, isCollapsed else { return done() }
-        showWhileHovered()
-        done()
+        guard let self else { return done() }
+        guard isCollapsed else {
+            watchPointer()
+            return done()
+        }
+        revealCovered {
+            self.watchPointer()
+            done()
+        }
     }
 
     private lazy var chevronLeft = symbol("chevron.left")
@@ -75,6 +86,7 @@ final class TuckBar: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         folders.sync()
+        folders.menuWillOpen = { [weak self] in self?.strip.hide() }
         if showOnHover { watchHover() }
         installHotkeyHandler()
         if hotkeyEnabled { registerHotkeys() }
@@ -98,7 +110,7 @@ final class TuckBar: NSObject, NSApplicationDelegate {
 
     private func collapse() {
         // Collapsing with a separator right of the toggle would push the toggle off screen too.
-        guard let sep = x(separator), let tog = x(toggle), sep < tog else { return }
+        guard let sep = x(separator), let tog = x(toggle), sep < tog else { return cover.hide() }
         collapseWork?.cancel()
         stopWatchingPointer()
         separator.length = collapsedLength
@@ -106,6 +118,70 @@ final class TuckBar: NSObject, NSApplicationDelegate {
             alwaysHidden.length = collapsedLength
         }
         toggle.button?.image = chevronLeft
+        // Give the menu bar a moment to lay out before lifting the cover.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            if self?.isCollapsed == true { self?.cover.hide() }
+        }
+    }
+
+    private func revealHidden() {
+        separator.length = NSStatusItem.variableLength
+        alwaysHidden.length = NSStatusItem.variableLength
+        toggle.button?.image = chevronRight
+        collapseWork?.cancel()
+    }
+
+    /// Reveals hidden items under a frozen picture of the menu bar when Screen Recording allows it.
+    private func revealCovered(then done: @escaping () -> Void) {
+        guard #available(macOS 14, *), Capture.allowed else {
+            revealHidden()
+            return done()
+        }
+        Task { @MainActor in
+            cover.show(await Capture.menuBars())
+            revealHidden()
+            done()
+        }
+    }
+
+    @available(macOS 14, *)
+    private func peek(_ id: String, anchor: NSRect) {
+        guard strip.folderID != id else { return }
+        if let cached = stripCache[id] { showStrip(id, cached, anchor) }
+        guard !peeking else { return }
+        peeking = true
+        Task { @MainActor in
+            defer { peeking = false }
+            let extras = folders.extras(of: id)
+            guard !extras.isEmpty else { return }
+            cover.show(await Capture.menuBars())
+            revealHidden()
+            for _ in 0..<60 where extras.contains(where: { $0.frame == nil }) { try? await Task.sleep(nanoseconds: 5_000_000) }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            let frames = extras.map { $0.frame ?? .zero }
+            let shots = await Capture.menuBars()
+            let images = Capture.crop(frames, from: shots)
+            // A strip pick during the refresh already opened an item's menu, so leave the bar revealed for it.
+            if pointerMonitors.isEmpty { collapse() }
+            let items = zip(extras, images).map { FolderStrip.Item(key: $0.key, name: $0.name, image: $1) }
+            stripCache[id] = items
+            if strip.folderID == id || folders.folder(at: NSEvent.mouseLocation)?.id == id { showStrip(id, items, anchor) }
+        }
+    }
+
+    private func showStrip(_ id: String, _ items: [FolderStrip.Item], _ anchor: NSRect) {
+        strip.show(folderID: id, items: items, below: anchor) { [weak self] key in self?.folders.open(key: key) }
+    }
+
+    private func hideStripSoon() {
+        guard stripHide == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            stripHide = nil
+            if !strip.contains(NSEvent.mouseLocation) { strip.hide() }
+        }
+        stripHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     private func expand(showAll: Bool) {
@@ -129,16 +205,25 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     }
 
     private func pointerMoved() {
-        guard isCollapsed else { return }
         let point = NSEvent.mouseLocation
-        let frames = ([toggle] + folders.statusItems).compactMap { $0.button?.window?.frame }
-        if frames.contains(where: { NSMouseInRect(point, $0.insetBy(dx: 0, dy: -2), false) }) { showWhileHovered() }
+        if strip.isVisible, !strip.contains(point) { hideStripSoon() }
+        guard isCollapsed, !cover.isShown else { return }
+        if let folder = folders.folder(at: point) {
+            if #available(macOS 14, *), Capture.allowed { peek(folder.id, anchor: folder.frame) } else { showWhileHovered() }
+        } else if let frame = toggle.button?.window?.frame, NSMouseInRect(point, frame.insetBy(dx: 0, dy: -2), false) {
+            strip.hide()
+            showWhileHovered()
+        }
     }
 
     /// Shows the hidden section until the pointer leaves the menu bar and no menu or popup is open.
     private func showWhileHovered() {
         expand(showAll: false)
         collapseWork?.cancel()
+        watchPointer()
+    }
+
+    private func watchPointer() {
         guard pointerMonitors.isEmpty else { return }
         let moved: (NSEvent) -> Void = { [weak self] _ in self?.scheduleHideCheck(after: 0.3) }
         pointerMonitors = [
@@ -176,7 +261,9 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     // Menus sit at layer 101 and status item popovers just above it; the status bar itself is layer 25.
     private func menuOrPopupOpen() -> Bool {
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
-        return windows?.contains { (101..<1000).contains($0[kCGWindowLayer as String] as? Int ?? 0) } ?? false
+        return windows?.contains {
+            (101..<1000).contains($0[kCGWindowLayer as String] as? Int ?? 0) && $0[kCGWindowOwnerPID as String] as? pid_t != getpid()
+        } ?? false
     }
 
     private func x(_ item: NSStatusItem) -> CGFloat? { item.button?.window?.frame.minX }

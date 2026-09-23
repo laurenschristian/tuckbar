@@ -19,7 +19,7 @@
 
 TuckBar hides menu bar icons you do not need to see all the time. Click one control to show or hide them.
 
-TuckBar is built for low, stable resource use. It is two small AppKit source files with no dependencies, timers, polling, or network access. It draws its icons once at launch. After that, it only checks the pointer position when the mouse moves.
+TuckBar is built for low, stable resource use. It is three small AppKit source files with no dependencies, timers, polling, or network access. It draws its icons once at launch. After that, it only checks the pointer position when the mouse moves.
 
 ## Performance
 
@@ -37,7 +37,7 @@ Measured on macOS 26, Apple Silicon:
 - Show or hide menu bar icons with one click, or by hovering over the chevron or a folder
 - Customizable global hotkey (default ⌃⌥⌘T), plus Shift to show everything
 - Optional always-hidden section for icons you almost never need
-- Folders: group icons such as Stats or utilities behind one folder icon
+- Folders: group icons such as Stats or utilities behind one folder icon. Hover a folder to see only its icons in a small strip
 - Optional auto-hide 10 seconds after you expand
 - Launch at login
 - Positions persist across restarts
@@ -106,9 +106,13 @@ A folder puts a group of menu bar icons behind one icon. For example, a chart ic
 4. Open Add or Remove and check the items for this folder.
 5. Hold Cmd and drag those items left of the `|` separator, so they stay hidden.
 
-Hover over the folder to show the hidden icons. Click the folder and choose an item to open that item's own menu. The icons hide again when the pointer leaves the menu bar and no menu is open. The folder menu also lets you change the icon, rename, or delete the folder.
+Hover over a folder to see a strip with only that folder's icons, as fresh images. Click an icon in the strip to open that item's own menu or popup. The strip shows the last images at once, then refreshes them in about 0.4 seconds.
 
-Folders need Accessibility permission to open other apps' menu bar items. The rest of TuckBar works without it. TuckBar reads the item list only when you open a folder, and only for the apps in that folder.
+The strip needs Screen Recording permission. To take the images, TuckBar covers the menu bar with a still picture of itself, shows the hidden icons underneath, captures them, and hides them again. Nothing in the menu bar moves. Without Screen Recording, hovering a folder shows all hidden icons instead.
+
+Click the folder for a list of its items, and to add or remove items, change the icon, rename, or delete it. The folder menu also lets you change the icon, rename, or delete the folder.
+
+Folders need Accessibility permission to open other apps' menu bar items, and Screen Recording for the hover strip. The rest of TuckBar works without either. TuckBar reads the item list only when you open a folder, and only for the apps in that folder.
 
 ## How it works
 

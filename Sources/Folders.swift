@@ -64,6 +64,16 @@ struct MenuExtra {
         }
     }
 
+    /// On-screen frame in CoreGraphics coordinates, or nil while the item is pushed off screen.
+    var frame: CGRect? {
+        var position = CGPoint.zero, size = CGSize.zero
+        guard let p = ax(element, kAXPositionAttribute), let s = ax(element, kAXSizeAttribute) else { return nil }
+        AXValueGetValue(p as! AXValue, .cgPoint, &position)
+        AXValueGetValue(s as! AXValue, .cgSize, &size)
+        let rect = CGRect(origin: position, size: size)
+        return NSScreen.screens.contains { $0.cgFrame.contains(CGPoint(x: rect.midX, y: rect.midY)) } ? rect : nil
+    }
+
     private static func shortLabel(_ el: AXUIElement, app: String) -> String? {
         let raw = [kAXHelpAttribute, kAXDescriptionAttribute, kAXIdentifierAttribute]
             .compactMap { ax(el, $0) as? String }.first { !$0.isEmpty }
@@ -81,7 +91,22 @@ private func ax(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
 
 final class Folders: NSObject, NSMenuDelegate {
     private var items: [String: NSStatusItem] = [:]
-    var statusItems: [NSStatusItem] { Array(items.values) }
+    var menuWillOpen: (() -> Void)?
+
+    /// The folder whose icon is under `point`, with that icon's frame.
+    func folder(at point: NSPoint) -> (id: String, frame: NSRect)? {
+        for (id, item) in items {
+            if let frame = item.button?.window?.frame, NSMouseInRect(point, frame.insetBy(dx: 0, dy: -2), false) { return (id, frame) }
+        }
+        return nil
+    }
+
+    /// Live items of a folder, in folder order.
+    func extras(of id: String) -> [MenuExtra] {
+        let entries = folders.first { $0.id == id }?.entries ?? []
+        let live = MenuExtra.all(in: Set(entries.map { String($0.key.prefix { $0 != "#" }) }))
+        return entries.compactMap { entry in live.first { $0.key == entry.key } }
+    }
     private let reveal: (@escaping () -> Void) -> Void
 
     /// `reveal` shows the hidden section if needed, then runs its callback.
@@ -110,7 +135,6 @@ final class Folders: NSObject, NSMenuDelegate {
             let item = items[folder.id] ?? makeItem(folder.id)
             item.button?.image = NSImage(systemSymbolName: folder.symbol, accessibilityDescription: folder.name)
             item.button?.image?.isTemplate = true
-            item.button?.toolTip = folder.name
         }
     }
 
@@ -137,6 +161,10 @@ final class Folders: NSObject, NSMenuDelegate {
         return item
     }
 
+    func menuWillOpen(_ menu: NSMenu) {
+        if menu.supermenu == nil { menuWillOpen?() }
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         if let raw = menu.identifier?.rawValue, raw.hasPrefix("edit:") { return fillEditMenu(menu, id: String(raw.dropFirst(5))) }
         menu.removeAllItems()
@@ -149,10 +177,13 @@ final class Folders: NSObject, NSMenuDelegate {
             menu.addItem(action("Grant Accessibility Access\u{2026}", #selector(requestAccess), nil))
             return
         }
+        if #available(macOS 14, *), !Capture.allowed {
+            menu.addItem(action("Show Icons on Hover (Screen Recording)\u{2026}", #selector(requestCapture), nil))
+        }
         let live = MenuExtra.all(in: Set(folder.entries.map { String($0.key.prefix { $0 != "#" }) }))
         for entry in folder.entries {
             let extra = live.first { $0.key == entry.key }
-            let item = action(extra?.name ?? "\(entry.name) (not running)", #selector(open), entry.key)
+            let item = action(extra?.name ?? "\(entry.name) (not running)", #selector(openItem), entry.key)
             item.image = extra?.icon
             item.isEnabled = extra != nil
             menu.addItem(item)
@@ -213,8 +244,11 @@ final class Folders: NSObject, NSMenuDelegate {
         folders.append(Folder(name: name))
     }
 
-    @objc private func open(_ sender: NSMenuItem) {
-        guard let key = sender.representedObject as? String else { return }
+    @objc private func openItem(_ sender: NSMenuItem) {
+        if let key = sender.representedObject as? String { open(key: key) }
+    }
+
+    func open(key: String) {
         // Items pushed off screen open their menus off screen too, so reveal them and wait until they land.
         reveal {
             let bundle = String(key.prefix { $0 != "#" })
@@ -229,7 +263,7 @@ final class Folders: NSObject, NSMenuDelegate {
         if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success {
             AXValueGetValue(value as! AXValue, .cgPoint, &point)
         }
-        let onScreen = NSScreen.screens.contains { point.x >= $0.frame.minX && point.x < $0.frame.maxX }
+        let onScreen = NSScreen.screens.contains { $0.cgFrame.contains(point) }
         guard onScreen || attempts == 0 else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { press(element, attempts: attempts - 1) }
             return
@@ -262,6 +296,12 @@ final class Folders: NSObject, NSMenuDelegate {
     @objc private func delete(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         folders.removeAll { $0.id == id }
+    }
+
+    @objc private func requestCapture() {
+        if !CGRequestScreenCaptureAccess() {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        }
     }
 
     @objc private func requestAccess() {
