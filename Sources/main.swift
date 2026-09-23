@@ -225,7 +225,8 @@ final class TuckBar: NSObject, NSApplicationDelegate {
         if strip.isVisible, !strip.contains(point) { hideStripSoon() }
         if let folder = folders.folder(at: point) {
             if #available(macOS 14, *), Capture.allowed { peek(folder.id, anchor: folder.frame) } else if isCollapsed { showWhileHovered() }
-        } else if isCollapsed, let frame = toggle.button?.window?.frame, NSMouseInRect(point, frame.insetBy(dx: 0, dy: -2), false) {
+        } else if isCollapsed, let frame = toggle.button?.window?.frame.onMenuBar(under: point),
+                  NSMouseInRect(point, frame.insetBy(dx: 0, dy: -2), false) {
             strip.hide()
             showWhileHovered()
         }

@@ -97,7 +97,8 @@ final class Folders: NSObject, NSMenuDelegate {
     /// The folder whose icon is under `point`, with that icon's frame.
     func folder(at point: NSPoint) -> (id: String, frame: NSRect)? {
         for (id, item) in items {
-            if let frame = item.button?.window?.frame, NSMouseInRect(point, frame.insetBy(dx: 0, dy: -2), false) { return (id, frame) }
+            guard let frame = item.button?.window?.frame.onMenuBar(under: point) else { continue }
+            if NSMouseInRect(point, frame.insetBy(dx: 0, dy: -2), false) { return (id, frame) }
         }
         return nil
     }

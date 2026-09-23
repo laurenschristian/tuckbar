@@ -11,6 +11,16 @@ extension NSScreen {
     }
 }
 
+extension NSRect {
+    /// Status item windows follow the active menu bar, so move this frame to the menu bar of the screen under `point`.
+    func onMenuBar(under point: NSPoint) -> NSRect {
+        let screens = NSScreen.screens
+        guard let target = screens.first(where: { NSMouseInRect(point, $0.frame, false) }),
+              let source = screens.first(where: { $0.frame.intersects(self) }), source != target else { return self }
+        return offsetBy(dx: target.frame.maxX - source.frame.maxX, dy: target.frame.maxY - source.frame.maxY)
+    }
+}
+
 @available(macOS 14, *)
 enum Capture {
     static var allowed: Bool { CGPreflightScreenCaptureAccess() }
