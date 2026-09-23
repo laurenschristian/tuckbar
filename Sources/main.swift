@@ -21,6 +21,10 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     private let autoHideDelay: TimeInterval = 10
     private var collapseWork: DispatchWorkItem?
     private var hotkeys: [EventHotKeyRef?] = []
+    private lazy var folders = Folders { [weak self] done in
+        self?.expand(showAll: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: done)
+    }
 
     private lazy var chevronLeft = symbol("chevron.left")
     private lazy var chevronRight = symbol("chevron.right")
@@ -61,6 +65,7 @@ final class TuckBar: NSObject, NSApplicationDelegate {
             button.action = #selector(clicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        folders.sync()
         installHotkeyHandler()
         if hotkeyEnabled { registerHotkeys() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.collapse() }
@@ -111,6 +116,9 @@ final class TuckBar: NSObject, NSApplicationDelegate {
         menu.addItem(item("Always-hidden section", #selector(toggleAlwaysHidden), on: alwaysHiddenEnabled))
         menu.addItem(item("Hotkey Enabled", #selector(toggleHotkey), on: hotkeyEnabled))
         menu.addItem(item("Set Hotkey (\(hotkeyLabel))\u{2026}", #selector(recordHotkey), on: false))
+        let newFolder = NSMenuItem(title: "New Folder\u{2026}", action: #selector(Folders.create), keyEquivalent: "")
+        newFolder.target = folders
+        menu.addItem(newFolder)
         menu.addItem(item("Launch at Login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled))
         menu.addItem(.separator())
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
