@@ -55,9 +55,11 @@ enum Capture {
 /// A frozen picture of each menu bar, so hidden items can be shown and captured without anything visibly moving.
 final class Cover {
     private var windows: [NSWindow] = []
+    private var pendingHide: DispatchWorkItem?
     var isShown: Bool { !windows.isEmpty }
 
     func show(_ shots: [(NSScreen, CGImage)]) {
+        hide()
         windows = shots.map { screen, image in
             let frame = NSRect(x: screen.frame.minX, y: screen.frame.maxY - screen.menuBarHeight,
                                width: screen.frame.width, height: screen.menuBarHeight)
@@ -72,8 +74,17 @@ final class Cover {
     }
 
     func hide() {
+        pendingHide?.cancel()
         windows.forEach { $0.orderOut(nil) }
         windows.removeAll()
+    }
+
+    /// Hides after the menu bar has had time to lay out, unless a newer `show` comes first.
+    func hide(after delay: TimeInterval) {
+        pendingHide?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.hide() }
+        pendingHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 }
 
@@ -99,10 +110,14 @@ final class FolderStrip: NSObject {
 
     var isVisible: Bool { panel.isVisible }
 
-    /// The panel plus the folder icon above it, so moving between them keeps the strip open.
+    /// The panel, its folder icon, and the gap between them, but not the neighbouring folders.
     func contains(_ point: NSPoint) -> Bool {
-        isVisible && NSMouseInRect(point, panel.frame.union(anchor).insetBy(dx: -6, dy: -6), false)
+        let gap = NSRect(x: anchor.minX, y: panel.frame.maxY, width: anchor.width, height: anchor.minY - panel.frame.maxY)
+        return isVisible && [panel.frame.insetBy(dx: -6, dy: -6), anchor.insetBy(dx: 0, dy: -2), gap]
+            .contains { NSMouseInRect(point, $0, false) }
     }
+
+    func panelContains(_ point: NSPoint) -> Bool { isVisible && NSMouseInRect(point, panel.frame.insetBy(dx: -6, dy: -6), false) }
 
     func show(folderID: String, items: [Item], below anchor: NSRect,
               onPick: @escaping (String) -> Void) {

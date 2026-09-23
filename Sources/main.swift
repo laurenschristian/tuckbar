@@ -90,7 +90,14 @@ final class TuckBar: NSObject, NSApplicationDelegate {
         if showOnHover { watchHover() }
         installHotkeyHandler()
         if hotkeyEnabled { registerHotkeys() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.collapse() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            // Hidden items are still showing from launch, so capture every folder now while it costs nothing.
+            guard #available(macOS 14, *), Capture.allowed else { return self.collapse() }
+            Task { @MainActor in
+                await self.captureFolders(self.folders.ids)
+                self.collapse()
+            }
+        }
     }
 
     @objc private func clicked() {
@@ -118,10 +125,7 @@ final class TuckBar: NSObject, NSApplicationDelegate {
             alwaysHidden.length = collapsedLength
         }
         toggle.button?.image = chevronLeft
-        // Give the menu bar a moment to lay out before lifting the cover.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            if self?.isCollapsed == true { self?.cover.hide() }
-        }
+        cover.hide(after: 0.1)
     }
 
     private func revealHidden() {
@@ -148,24 +152,36 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     private func peek(_ id: String, anchor: NSRect) {
         guard strip.folderID != id else { return }
         if let cached = stripCache[id] { showStrip(id, cached, anchor) }
-        guard !peeking else { return }
+        // A running refresh calls pointerMoved when it ends, which picks this folder up.
+        guard !peeking, isCollapsed else { return }
         peeking = true
         Task { @MainActor in
-            defer { peeking = false }
-            let extras = folders.extras(of: id)
-            guard !extras.isEmpty else { return }
             cover.show(await Capture.menuBars())
             revealHidden()
-            for _ in 0..<60 where extras.contains(where: { $0.frame == nil }) { try? await Task.sleep(nanoseconds: 5_000_000) }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-            let frames = extras.map { $0.frame ?? .zero }
-            let shots = await Capture.menuBars()
-            let images = Capture.crop(frames, from: shots)
+            await captureFolders([id])
             // A strip pick during the refresh already opened an item's menu, so leave the bar revealed for it.
             if pointerMonitors.isEmpty { collapse() }
-            let items = zip(extras, images).map { FolderStrip.Item(key: $0.key, name: $0.name, image: $1) }
-            stripCache[id] = items
-            if strip.folderID == id || folders.folder(at: NSEvent.mouseLocation)?.id == id { showStrip(id, items, anchor) }
+            peeking = false
+            let point = NSEvent.mouseLocation
+            let stillHere = folders.folder(at: point)?.id == id || (strip.folderID == id && strip.panelContains(point))
+            if stillHere, let items = stripCache[id] { showStrip(id, items, anchor) } else { pointerMoved() }
+        }
+    }
+
+    /// Captures the given folders' items into the strip cache. The items must already be revealed.
+    @available(macOS 14, *)
+    private func captureFolders(_ ids: [String]) async {
+        let groups = ids.map { ($0, folders.extras(of: $0)) }.filter { !$0.1.isEmpty }
+        let extras = groups.flatMap(\.1)
+        guard !extras.isEmpty else { return }
+        for _ in 0..<60 where extras.contains(where: { $0.frame == nil }) { try? await Task.sleep(nanoseconds: 5_000_000) }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        let shots = await Capture.menuBars()
+        for (id, group) in groups {
+            let frames = group.compactMap(\.frame)
+            guard frames.count == group.count else { continue }
+            let images = Capture.crop(frames, from: shots)
+            stripCache[id] = zip(group, images).map { FolderStrip.Item(key: $0.key, name: $0.name, image: $1) }
         }
     }
 
@@ -207,10 +223,9 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     private func pointerMoved() {
         let point = NSEvent.mouseLocation
         if strip.isVisible, !strip.contains(point) { hideStripSoon() }
-        guard isCollapsed, !cover.isShown else { return }
         if let folder = folders.folder(at: point) {
-            if #available(macOS 14, *), Capture.allowed { peek(folder.id, anchor: folder.frame) } else { showWhileHovered() }
-        } else if let frame = toggle.button?.window?.frame, NSMouseInRect(point, frame.insetBy(dx: 0, dy: -2), false) {
+            if #available(macOS 14, *), Capture.allowed { peek(folder.id, anchor: folder.frame) } else if isCollapsed { showWhileHovered() }
+        } else if isCollapsed, let frame = toggle.button?.window?.frame, NSMouseInRect(point, frame.insetBy(dx: 0, dy: -2), false) {
             strip.hide()
             showWhileHovered()
         }
@@ -221,6 +236,13 @@ final class TuckBar: NSObject, NSApplicationDelegate {
         expand(showAll: false)
         collapseWork?.cancel()
         watchPointer()
+        if #available(macOS 14, *), Capture.allowed, !peeking {
+            peeking = true
+            Task { @MainActor in
+                await captureFolders(folders.ids)
+                peeking = false
+            }
+        }
     }
 
     private func watchPointer() {

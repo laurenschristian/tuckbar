@@ -92,6 +92,7 @@ private func ax(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
 final class Folders: NSObject, NSMenuDelegate {
     private var items: [String: NSStatusItem] = [:]
     var menuWillOpen: (() -> Void)?
+    var ids: [String] { folders.map(\.id) }
 
     /// The folder whose icon is under `point`, with that icon's frame.
     func folder(at point: NSPoint) -> (id: String, frame: NSRect)? {
