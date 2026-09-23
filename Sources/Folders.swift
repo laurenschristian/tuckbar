@@ -20,7 +20,9 @@ struct MenuExtra {
     let element: AXUIElement
 
     static func all() -> [MenuExtra] {
-        NSWorkspace.shared.runningApplications.flatMap { app -> [MenuExtra] in
+        let apps = NSWorkspace.shared.runningApplications
+        let bundles = apps.compactMap(\.bundleIdentifier)
+        return apps.flatMap { app -> [MenuExtra] in
             guard let bundle = app.bundleIdentifier, bundle != Bundle.main.bundleIdentifier,
                   let bar = ax(AXUIElementCreateApplication(app.processIdentifier), "AXExtrasMenuBar"),
                   CFGetTypeID(bar) == AXUIElementGetTypeID(),
@@ -37,10 +39,26 @@ struct MenuExtra {
                     return MenuExtra(key: "\(bundle)#\(id)", name: label, icon: icon, element: el)
                 }
             }
+            // OneDrive runs one process per account, so a lone item still needs a name to stay distinct.
+            guard kids.count > 1 || bundles.filter({ $0 == bundle }).count > 1 else {
+                return kids.map { MenuExtra(key: "\(bundle)#0", name: name, icon: icon, element: $0) }
+            }
+            // AX order does not follow screen order, so key these by their tooltip name, e.g. Stats "CPU: Mini".
             return kids.enumerated().map { i, el in
-                MenuExtra(key: "\(bundle)#\(i)", name: kids.count > 1 ? "\(name) \(i + 1)" : name, icon: icon, element: el)
+                let label = shortLabel(el, app: name)
+                return MenuExtra(key: "\(bundle)#\(label ?? String(i))", name: "\(name): \(label ?? String(i + 1))",
+                                 icon: icon, element: el)
             }
         }
+    }
+
+    private static func shortLabel(_ el: AXUIElement, app: String) -> String? {
+        let raw = [kAXHelpAttribute, kAXDescriptionAttribute, kAXIdentifierAttribute]
+            .compactMap { ax(el, $0) as? String }.first { !$0.isEmpty }
+        guard var label = raw?.components(separatedBy: .newlines).first?.components(separatedBy: ":").first else { return nil }
+        if label.hasPrefix(app) { label.removeFirst(app.count) }
+        label = label.trimmingCharacters(in: CharacterSet(charactersIn: " -\u{2013}\u{2014}"))
+        return label.isEmpty ? nil : label
     }
 }
 
