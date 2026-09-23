@@ -11,6 +11,7 @@ private let hotkeyEnabledKey = "hotkeyEnabled"
 private let hotkeyCodeKey = "hotkeyCode"
 private let hotkeyModifiersKey = "hotkeyModifiers"
 private let hotkeyLabelKey = "hotkeyLabel"
+private let showOnHoverKey = "showOnHover"
 
 final class TuckBar: NSObject, NSApplicationDelegate {
     // Each new item lands left of the previous one: toggle, then separator, then always-hidden separator.
@@ -21,9 +22,13 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     private let autoHideDelay: TimeInterval = 10
     private var collapseWork: DispatchWorkItem?
     private var hotkeys: [EventHotKeyRef?] = []
+    private var hoverMonitors: [Any] = []
+    private var pointerMonitors: [Any] = []
+    private var hideCheck: DispatchWorkItem?
     private lazy var folders = Folders { [weak self] done in
-        self?.expand(showAll: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: done)
+        guard let self, isCollapsed else { return done() }
+        showWhileHovered()
+        done()
     }
 
     private lazy var chevronLeft = symbol("chevron.left")
@@ -46,6 +51,10 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     private var hotkeyModifiers: UInt32 {
         UInt32(UserDefaults.standard.object(forKey: hotkeyModifiersKey) as? Int ?? (cmdKey | optionKey | controlKey))
     }
+    private var showOnHover: Bool {
+        get { UserDefaults.standard.object(forKey: showOnHoverKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: showOnHoverKey) }
+    }
     private var hotkeyLabel: String { UserDefaults.standard.string(forKey: hotkeyLabelKey) ?? "\u{2303}\u{2325}\u{2318}T" }
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -66,6 +75,7 @@ final class TuckBar: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         folders.sync()
+        if showOnHover { watchHover() }
         installHotkeyHandler()
         if hotkeyEnabled { registerHotkeys() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.collapse() }
@@ -90,6 +100,7 @@ final class TuckBar: NSObject, NSApplicationDelegate {
         // Collapsing with a separator right of the toggle would push the toggle off screen too.
         guard let sep = x(separator), let tog = x(toggle), sep < tog else { return }
         collapseWork?.cancel()
+        stopWatchingPointer()
         separator.length = collapsedLength
         if alwaysHiddenEnabled, let always = x(alwaysHidden), always < sep {
             alwaysHidden.length = collapsedLength
@@ -108,10 +119,71 @@ final class TuckBar: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + autoHideDelay, execute: work)
     }
 
+    // Status items live in Control Center windows on macOS 26, so tracking areas never fire; check the pointer instead.
+    private func watchHover() {
+        let moved: (NSEvent) -> Void = { [weak self] _ in self?.pointerMoved() }
+        hoverMonitors = [
+            NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: moved),
+            NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { moved($0); return $0 },
+        ].compactMap { $0 }
+    }
+
+    private func pointerMoved() {
+        guard isCollapsed else { return }
+        let point = NSEvent.mouseLocation
+        let frames = ([toggle] + folders.statusItems).compactMap { $0.button?.window?.frame }
+        if frames.contains(where: { NSMouseInRect(point, $0.insetBy(dx: 0, dy: -2), false) }) { showWhileHovered() }
+    }
+
+    /// Shows the hidden section until the pointer leaves the menu bar and no menu or popup is open.
+    private func showWhileHovered() {
+        expand(showAll: false)
+        collapseWork?.cancel()
+        guard pointerMonitors.isEmpty else { return }
+        let moved: (NSEvent) -> Void = { [weak self] _ in self?.scheduleHideCheck(after: 0.3) }
+        pointerMonitors = [
+            NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseUp, .rightMouseUp], handler: moved),
+            NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseUp, .rightMouseUp]) { moved($0); return $0 },
+        ].compactMap { $0 }
+    }
+
+    private func scheduleHideCheck(after delay: TimeInterval) {
+        guard hideCheck == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            hideCheck = nil
+            if pointerInMenuBar() { return }
+            menuOrPopupOpen() ? scheduleHideCheck(after: 0.5) : collapse()
+        }
+        hideCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func stopWatchingPointer() {
+        pointerMonitors.forEach(NSEvent.removeMonitor)
+        pointerMonitors.removeAll()
+        hideCheck?.cancel()
+        hideCheck = nil
+    }
+
+    private func pointerInMenuBar() -> Bool {
+        let point = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }) else { return false }
+        let height = max(NSStatusBar.system.thickness, screen.frame.maxY - screen.visibleFrame.maxY)
+        return point.y >= screen.frame.maxY - height - 2
+    }
+
+    // Menus sit at layer 101 and status item popovers just above it; the status bar itself is layer 25.
+    private func menuOrPopupOpen() -> Bool {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+        return windows?.contains { (101..<1000).contains($0[kCGWindowLayer as String] as? Int ?? 0) } ?? false
+    }
+
     private func x(_ item: NSStatusItem) -> CGFloat? { item.button?.window?.frame.minX }
 
     private func showMenu() {
         let menu = NSMenu()
+        menu.addItem(item("Show on Hover", #selector(toggleShowOnHover), on: showOnHover))
         menu.addItem(item("Auto-hide after \(Int(autoHideDelay))s", #selector(toggleAutoHide), on: autoHide))
         menu.addItem(item("Always-hidden section", #selector(toggleAlwaysHidden), on: alwaysHiddenEnabled))
         menu.addItem(item("Hotkey Enabled", #selector(toggleHotkey), on: hotkeyEnabled))
@@ -139,6 +211,13 @@ final class TuckBar: NSObject, NSApplicationDelegate {
     @objc private func toggleAutoHide() {
         autoHide.toggle()
         if !autoHide { collapseWork?.cancel() }
+    }
+
+    @objc private func toggleShowOnHover() {
+        showOnHover.toggle()
+        hoverMonitors.forEach(NSEvent.removeMonitor)
+        hoverMonitors.removeAll()
+        if showOnHover { watchHover() }
     }
 
     @objc private func toggleAlwaysHidden() {

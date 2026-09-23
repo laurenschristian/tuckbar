@@ -19,36 +19,48 @@ struct MenuExtra {
     let icon: NSImage?
     let element: AXUIElement
 
-    static func all() -> [MenuExtra] {
-        let apps = NSWorkspace.shared.runningApplications
-        let bundles = apps.compactMap(\.bundleIdentifier)
-        return apps.flatMap { app -> [MenuExtra] in
-            guard let bundle = app.bundleIdentifier, bundle != Bundle.main.bundleIdentifier,
-                  let bar = ax(AXUIElementCreateApplication(app.processIdentifier), "AXExtrasMenuBar"),
-                  CFGetTypeID(bar) == AXUIElementGetTypeID(),
-                  let kids = ax(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
-            let name = app.localizedName ?? bundle
-            let icon = app.icon?.copy() as? NSImage
-            icon?.size = NSSize(width: 16, height: 16)
-            // Control Center keeps hidden modules as unlabeled children and reorders them, so key it by identifier.
-            if bundle == controlCenter {
-                return kids.compactMap { el in
-                    guard let id = ax(el, kAXIdentifierAttribute) as? String,
-                          let desc = ax(el, kAXDescriptionAttribute) as? String else { return nil }
-                    let label = desc.components(separatedBy: ",")[0]
-                    return MenuExtra(key: "\(bundle)#\(id)", name: label, icon: icon, element: el)
-                }
+    /// Each AX query costs ~15 ms, so callers pass the bundles they need and the rest run in parallel.
+    static func all(in only: Set<String>? = nil) -> [MenuExtra] {
+        let running = NSWorkspace.shared.runningApplications
+        let bundles = running.compactMap(\.bundleIdentifier)
+        let apps = running.filter { app in
+            app.activationPolicy != .prohibited && only.map { app.bundleIdentifier.map($0.contains) ?? false } ?? true
+        }
+        var found = [[MenuExtra]](repeating: [], count: apps.count)
+        found.withUnsafeMutableBufferPointer { out in
+            DispatchQueue.concurrentPerform(iterations: apps.count) { out[$0] = extras(of: apps[$0], bundles: bundles) }
+        }
+        return found.flatMap { $0 }
+    }
+
+    private static func extras(of app: NSRunningApplication, bundles: [String]) -> [MenuExtra] {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        guard let bundle = app.bundleIdentifier, bundle != Bundle.main.bundleIdentifier,
+              let bar = ax(element, "AXExtrasMenuBar"),
+              CFGetTypeID(bar) == AXUIElementGetTypeID(),
+              let kids = ax(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
+        let name = app.localizedName ?? bundle
+        let icon = app.icon?.copy() as? NSImage
+        icon?.size = NSSize(width: 16, height: 16)
+        // Control Center keeps hidden modules as unlabeled children and reorders them, so key it by identifier.
+        if bundle == controlCenter {
+            return kids.compactMap { el in
+                guard let id = ax(el, kAXIdentifierAttribute) as? String,
+                      let desc = ax(el, kAXDescriptionAttribute) as? String else { return nil }
+                let label = desc.components(separatedBy: ",")[0]
+                return MenuExtra(key: "\(bundle)#\(id)", name: label, icon: icon, element: el)
             }
-            // OneDrive runs one process per account, so a lone item still needs a name to stay distinct.
-            guard kids.count > 1 || bundles.filter({ $0 == bundle }).count > 1 else {
-                return kids.map { MenuExtra(key: "\(bundle)#0", name: name, icon: icon, element: $0) }
-            }
-            // AX order does not follow screen order, so key these by their tooltip name, e.g. Stats "CPU: Mini".
-            return kids.enumerated().map { i, el in
-                let label = shortLabel(el, app: name)
-                return MenuExtra(key: "\(bundle)#\(label ?? String(i))", name: "\(name): \(label ?? String(i + 1))",
-                                 icon: icon, element: el)
-            }
+        }
+        // OneDrive runs one process per account, so a lone item still needs a name to stay distinct.
+        guard kids.count > 1 || bundles.filter({ $0 == bundle }).count > 1 else {
+            return kids.map { MenuExtra(key: "\(bundle)#0", name: name, icon: icon, element: $0) }
+        }
+        // AX order does not follow screen order, so key these by their tooltip name, e.g. Stats "CPU: Mini".
+        return kids.enumerated().map { i, el in
+            let label = shortLabel(el, app: name)
+            return MenuExtra(key: "\(bundle)#\(label ?? String(i))", name: "\(name): \(label ?? String(i + 1))",
+                             icon: icon, element: el)
         }
     }
 
@@ -69,9 +81,10 @@ private func ax(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
 
 final class Folders: NSObject, NSMenuDelegate {
     private var items: [String: NSStatusItem] = [:]
+    var statusItems: [NSStatusItem] { Array(items.values) }
     private let reveal: (@escaping () -> Void) -> Void
 
-    /// `reveal` shows every hidden item, then runs its callback once the menu bar has laid out.
+    /// `reveal` shows the hidden section if needed, then runs its callback.
     init(reveal: @escaping (@escaping () -> Void) -> Void) {
         self.reveal = reveal
     }
@@ -105,10 +118,14 @@ final class Folders: NSObject, NSMenuDelegate {
 
     private func makeItem(_ id: String) -> NSStatusItem {
         // Positions count from the right edge, so a value just under the chevron's places a new folder right of it.
+        // Folders sharing a position swap places between launches, so each gets its own slot.
         let defaults = UserDefaults.standard
-        if defaults.object(forKey: positionKey(id)) == nil,
+        let taken = items.keys.compactMap { defaults.object(forKey: positionKey($0)) as? Double }
+        let current = defaults.object(forKey: positionKey(id)) as? Double
+        if current.map(taken.contains) ?? true,
            let toggle = defaults.object(forKey: "NSStatusItem Preferred Position tuckbar.toggle") as? Double {
-            defaults.set(max(toggle - 1, 0), forKey: positionKey(id))
+            let free = stride(from: toggle - 1, to: 0, by: -1).first { !taken.contains($0) } ?? 0
+            defaults.set(free, forKey: positionKey(id))
         }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.autosaveName = "tuckbar.folder.\(id)"
@@ -121,6 +138,7 @@ final class Folders: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if let raw = menu.identifier?.rawValue, raw.hasPrefix("edit:") { return fillEditMenu(menu, id: String(raw.dropFirst(5))) }
         menu.removeAllItems()
         guard let id = menu.identifier?.rawValue, let folder = folders.first(where: { $0.id == id }) else { return }
         let header = NSMenuItem(title: folder.name, action: nil, keyEquivalent: "")
@@ -131,7 +149,7 @@ final class Folders: NSObject, NSMenuDelegate {
             menu.addItem(action("Grant Accessibility Access\u{2026}", #selector(requestAccess), nil))
             return
         }
-        let live = MenuExtra.all()
+        let live = MenuExtra.all(in: Set(folder.entries.map { String($0.key.prefix { $0 != "#" }) }))
         for entry in folder.entries {
             let extra = live.first { $0.key == entry.key }
             let item = action(extra?.name ?? "\(entry.name) (not running)", #selector(open), entry.key)
@@ -146,13 +164,11 @@ final class Folders: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
+        // Listing every app is the slow part, so build this submenu only when it opens.
         let edit = NSMenu()
-        for extra in live {
-            let item = action(extra.name, #selector(toggleEntry), [id, extra.key, extra.name])
-            item.image = extra.icon
-            item.state = folder.entries.contains { $0.key == extra.key } ? .on : .off
-            edit.addItem(item)
-        }
+        edit.identifier = NSUserInterfaceItemIdentifier("edit:\(id)")
+        edit.delegate = self
+        edit.addItem(NSMenuItem(title: "Loading\u{2026}", action: nil, keyEquivalent: ""))
         menu.addItem(submenu("Add or Remove", edit))
 
         let icons = NSMenu()
@@ -166,6 +182,17 @@ final class Folders: NSObject, NSMenuDelegate {
         menu.addItem(submenu("Icon", icons))
         menu.addItem(action("Rename\u{2026}", #selector(rename), id))
         menu.addItem(action("Delete Folder", #selector(delete), id))
+    }
+
+    private func fillEditMenu(_ menu: NSMenu, id: String) {
+        menu.removeAllItems()
+        let entries = folders.first { $0.id == id }?.entries ?? []
+        for extra in MenuExtra.all().sorted(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending }) {
+            let item = action(extra.name, #selector(toggleEntry), [id, extra.key, extra.name])
+            item.image = extra.icon
+            item.state = entries.contains { $0.key == extra.key } ? .on : .off
+            menu.addItem(item)
+        }
     }
 
     private func action(_ title: String, _ selector: Selector, _ object: Any?) -> NSMenuItem {
@@ -188,11 +215,26 @@ final class Folders: NSObject, NSMenuDelegate {
 
     @objc private func open(_ sender: NSMenuItem) {
         guard let key = sender.representedObject as? String else { return }
-        // Items pushed off screen open their menus off screen too, so reveal them before pressing.
+        // Items pushed off screen open their menus off screen too, so reveal them and wait until they land.
         reveal {
-            guard let extra = MenuExtra.all().first(where: { $0.key == key }) else { return }
-            AXUIElementPerformAction(extra.element, kAXPressAction as CFString)
+            let bundle = String(key.prefix { $0 != "#" })
+            guard let extra = MenuExtra.all(in: [bundle]).first(where: { $0.key == key }) else { return }
+            Self.press(extra.element, attempts: 25)
         }
+    }
+
+    private static func press(_ element: AXUIElement, attempts: Int) {
+        var value: CFTypeRef?
+        var point = CGPoint(x: -1, y: 0)
+        if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success {
+            AXValueGetValue(value as! AXValue, .cgPoint, &point)
+        }
+        let onScreen = NSScreen.screens.contains { point.x >= $0.frame.minX && point.x < $0.frame.maxX }
+        guard onScreen || attempts == 0 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { press(element, attempts: attempts - 1) }
+            return
+        }
+        AXUIElementPerformAction(element, kAXPressAction as CFString)
     }
 
     @objc private func toggleEntry(_ sender: NSMenuItem) {

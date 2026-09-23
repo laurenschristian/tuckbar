@@ -19,7 +19,7 @@
 
 TuckBar hides menu bar icons you do not need to see all the time. Click one control to show or hide them.
 
-TuckBar is built for low, stable resource use. It is two small AppKit source files with no dependencies, timers, polling, or network access. It draws its icons once at launch. After that, it does no work until you click it.
+TuckBar is built for low, stable resource use. It is two small AppKit source files with no dependencies, timers, polling, or network access. It draws its icons once at launch. After that, it only checks the pointer position when the mouse moves.
 
 ## Performance
 
@@ -34,7 +34,7 @@ Measured on macOS 26, Apple Silicon:
 
 ## Features
 
-- Show or hide menu bar icons with one click
+- Show or hide menu bar icons with one click, or by hovering over the chevron or a folder
 - Customizable global hotkey (default ⌃⌥⌘T), plus Shift to show everything
 - Optional always-hidden section for icons you almost never need
 - Folders: group icons such as Stats or utilities behind one folder icon
@@ -81,6 +81,7 @@ xattr -dr com.apple.quarantine /Applications/TuckBar.app
 
 | Menu item | Description |
 | --- | --- |
+| Show on Hover | Shows hidden icons while the pointer is over the chevron or a folder. They hide when the pointer leaves the menu bar and no menu is open |
 | Auto-hide after 10s | Hides the icons again 10 seconds after you expand them |
 | Always-hidden section | Adds a second `‖` separator. Icons to its left stay hidden until you show everything |
 | Hotkey Enabled | Turns the global hotkeys on or off |
@@ -105,9 +106,9 @@ A folder puts a group of menu bar icons behind one icon. For example, a chart ic
 4. Open Add or Remove and check the items for this folder.
 5. Hold Cmd and drag those items left of the `|` separator, so they stay hidden.
 
-Click the folder and choose an item. TuckBar shows the hidden icons and opens that item's own menu. It hides them again after 10 seconds. The folder menu also lets you change the icon, rename, or delete the folder.
+Hover over the folder to show the hidden icons. Click the folder and choose an item to open that item's own menu. The icons hide again when the pointer leaves the menu bar and no menu is open. The folder menu also lets you change the icon, rename, or delete the folder.
 
-Folders need Accessibility permission to open other apps' menu bar items. The rest of TuckBar works without it. TuckBar reads the item list only when you open a folder.
+Folders need Accessibility permission to open other apps' menu bar items. The rest of TuckBar works without it. TuckBar reads the item list only when you open a folder, and only for the apps in that folder.
 
 ## How it works
 
